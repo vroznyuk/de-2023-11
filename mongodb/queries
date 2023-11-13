@@ -1,0 +1,60 @@
+# Загрузка данных
+docker cp test_data.json mongodb:/tmp/test_data.json
+docker container exec -it mongodb bash
+root@mongodb:/#mongoimport --collection=connection_hist --file=/tmp/test_data.json --jsonArray
+
+# Выдать упорядоченный список URL ресурсов
+db.connection_hist.distinct("url").sort()
+# или
+db.connection_hist.aggregate([ { $group: {_id: "$url"} }, { $sort: {_id: 1} } ])
+
+# Выдать упорядоченный список IP-адресов пользователей, посетивших ресурс с заданным URL
+db.connection_hist.find({ url: "http://barnett.com/" }, { ip: 1, _id: 0 }).sort({ ip: 1 })
+
+# Выдать упорядоченный список URL ресурсов, посещенных в заданный временной период
+db.connection_hist.aggregate([ { $match: { connection_ts: { $gt: ISODate("2023-11-04T00:00:00Z").getTime(), $lt: ISODate("2023-11-05T00:00:00Z").getTime() } } }, { $group: { _id: "$url" } }, { $sort : { _id: 1 } } ])
+
+# Выдать упорядоченный список URL ресурсов, посещенных пользователем с заданным IP-адресом
+db.connection_hist.find({ ip: "71.75.209.48" }, { url: 1, _id: 0 }).sort({ url: 1 })
+
+# Выдать список URL ресурсов с указанием суммарной длительности посещения каждого ресурса, упорядоченный по убыванию
+db.connection_hist.mapReduce(function() { emit(this.url, this.duration); }, function (key, value) { return Array.sum(value)}, { out: 'total_duration'})
+db.total_duration.find({}).sort({"value": -1})
+
+# Выдать список URL ресурсов с указанием суммарного количества посещений каждого ресурса, упорядоченный по убыванию
+db.connection_hist.mapReduce(function() { emit(this.url, 1); }, function (key, value) { return Array.sum(value)}, { out: 'total_visits'})
+db.total_visits.find({}).sort({"value": -1})
+
+# Выдать список URL ресурсов с указанием количества посещений каждого ресурса в день за заданный период,
+# упорядоченный URL ресурса и убыванию количества посещений
+db.connection_hist.mapReduce(
+    function() {
+                var date = new Date(new Date(this.connection_ts).toISOString().split('T')[0]);
+                emit({url: this.url, date: date}, {count: 1});
+                },
+    function(key, values) {
+                var count = 0;
+                values.forEach((value) => { count += value.count; });
+                return {count: count};
+                },
+                { out: "visits_by_date" }
+)
+db.visits_by_date.find({ "_id.date": { $gte: ISODate("2023-10-23T00:00:00Z"), $lte: ISODate("2023-10-25T00:00:00Z") }}).sort({ "_id.url": 1, "value.count": -1})
+
+# Выдать список IP-адресов c указанием суммарного количества и суммарной длительности посещений ресурсов,
+# упорядоченный по адресу, убыванию количества и убыванию длительности
+db.connection_hist.mapReduce(
+    function() {
+        emit(this.ip, { count: 1, duration: this.duration });
+        },
+    function(key, values) {
+        var result = { count: 0, duration: 0 };
+        values.forEach((value) => {
+            result.count += value.count;
+            result.duration += value.duration;
+        });
+        return result;
+        },
+    { out: "stats_by_ip" }
+)
+db.stats_by_ip.find({}).sort({"value.count": -1, "value.duration": -1})
